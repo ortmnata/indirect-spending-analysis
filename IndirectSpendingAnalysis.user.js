@@ -14,8 +14,8 @@
 // @connect      galaxybiprintfile-prod.s3.us-west-2.amazonaws.com
 // @connect      midway-auth.amazon.com
 // @require      https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js
-// @updateURL    https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/SupportAnalysis.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/SupportAnalysis.user.js
+// @updateURL    https://raw.githubusercontent.com/ortmnata/indirect-spending-analysis/main/IndirectSpendingAnalysis.user.js
+// @downloadURL  https://raw.githubusercontent.com/ortmnata/indirect-spending-analysis/main/IndirectSpendingAnalysis.user.js
 // ==/UserScript==
 
 (function () {
