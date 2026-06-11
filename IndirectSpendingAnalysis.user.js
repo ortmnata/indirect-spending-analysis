@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      1.3
+// @version      1.4
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -1489,8 +1489,9 @@
             .sa-results-inner {
                 background: white;
                 border-radius: 16px;
-                width: 90%;
-                max-width: 900px;
+                width: fit-content;
+                min-width: 600px;
+                max-width: 95vw;
                 max-height: 85vh;
                 display: flex;
                 flex-direction: column;
@@ -2218,7 +2219,7 @@
         const totalHours = typeEntries.reduce((sum, [, val]) => sum + val.hours, 0);
         
         // Build HTML report for rich paste
-        let html = `<div style="font-family:Arial,sans-serif;font-size:13px;max-width:900px;">`;
+        let html = `<div style="font-family:Arial,sans-serif;font-size:13px;">`;
         
         // Header
         html += `<div style="background:#059669;color:white;padding:10px 16px;border-radius:8px 8px 0 0;margin-bottom:12px;">`;
