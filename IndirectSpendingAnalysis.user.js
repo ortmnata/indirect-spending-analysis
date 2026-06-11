@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      1.4
+// @version      1.5
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -261,6 +261,31 @@
             // Exactly 100 — no color styling
             return { text, bgColor: '', textColor: '' };
         }
+    }
+
+    // ============================================================
+    //                    TOAST NOTIFICATIONS
+    // ============================================================
+
+    function showToast(message, options = {}) {
+        // Remove existing toast if any
+        const existing = document.getElementById('sa-toast');
+        if (existing) existing.remove();
+
+        const toast = document.createElement('div');
+        toast.id = 'sa-toast';
+        toast.className = 'sa-toast';
+        toast.innerHTML = `
+            <span>⚠️ ${message}${options.link ? ` <a href="${options.link}" target="_blank">${options.linkText || 'Click here'}</a>` : ''}</span>
+            <button class="sa-toast-close">×</button>
+        `;
+        document.body.appendChild(toast);
+
+        toast.querySelector('.sa-toast-close').addEventListener('click', () => toast.remove());
+
+        // Auto-dismiss after duration (default 10s)
+        const duration = options.duration || 10000;
+        setTimeout(() => { if (toast.parentNode) toast.remove(); }, duration);
     }
 
     // ============================================================
@@ -568,7 +593,11 @@
         } catch (e) {
             if (e.message === 'AUTH_REDIRECT' || e.message === 'AUTH_FAILED') {
                 console.warn('[SupportAnalysis] GalaxyBI authentication required');
-                // Show a non-blocking toast (will be handled by the UI layer)
+                showToast('LP rates unavailable — please authenticate to GalaxyBI first.', {
+                    link: 'https://galaxybi.aka.corp.amazon.com',
+                    linkText: 'Open GalaxyBI',
+                    duration: 15000
+                });
             } else {
                 console.error('[SupportAnalysis] LP fetch failed:', e);
             }
@@ -1629,6 +1658,45 @@
                 margin: 24px 0 12px 0;
                 padding-bottom: 8px;
                 border-bottom: 2px solid #e5e7eb;
+            }
+
+            /* Toast Notification */
+            .sa-toast {
+                position: fixed;
+                bottom: 24px;
+                right: 24px;
+                background: #1f2937;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 10px;
+                font-size: 13px;
+                font-family: "Amazon Ember", -apple-system, sans-serif;
+                box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+                z-index: 10010;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                animation: sa-toast-in 0.3s ease;
+                max-width: 420px;
+            }
+            .sa-toast a {
+                color: #67e8f9;
+                text-decoration: underline;
+                font-weight: 600;
+            }
+            .sa-toast-close {
+                background: none;
+                border: none;
+                color: #9ca3af;
+                font-size: 18px;
+                cursor: pointer;
+                padding: 0 4px;
+                margin-left: 8px;
+            }
+            .sa-toast-close:hover { color: white; }
+            @keyframes sa-toast-in {
+                from { opacity: 0; transform: translateY(12px); }
+                to { opacity: 1; transform: translateY(0); }
             }
             
             /* Tables */
