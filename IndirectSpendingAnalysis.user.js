@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      1.2
+// @version      1.3
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -611,9 +611,19 @@
             EMPLOYEE_NAME: 4,
             MANAGER_NAME: 5
         };
+
+        // Detect if CSV has "Total" summary rows (Week/Month queries do, Intraday typically don't)
+        // If Total rows exist, ONLY use those to avoid double-counting daily breakdowns
+        const hasTotalRows = dataRows.some(row => row.length > 15 && (row[15] || '').trim() === 'Total');
         
         dataRows.forEach(row => {
             if (row.length < 7) return;
+
+            // If the CSV has Total summary rows, skip non-Total rows to avoid double-counting
+            if (hasTotalRows && row.length > 15) {
+                const marker = (row[15] || '').trim();
+                if (marker !== 'Total') return;
+            }
             
             // Validate paid hours value from the detected column
             const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
@@ -1191,46 +1201,57 @@
         // Summary by Manager
         const byManager = {};
         
-        // Unique employees to avoid double-counting
+        // Unique employees: key includes shift to allow same employee across shifts
+        // but deduplicates within a shift to prevent double-counting from overlapping queries
         const uniqueEmployees = new Map();
         
         data.forEach(row => {
-            const key = `${row.employeeId}-${row.functionName}`;
+            // Key includes shift label so an employee counted in FHD isn't blocked from BHD
+            // But within the same shift, same employee-function combo is only counted once
+            const key = `${row.employeeId}-${row.functionName}-${row.shift}`;
             
-            // Track unique employee-function combinations
             if (!uniqueEmployees.has(key)) {
                 uniqueEmployees.set(key, row);
-                
-                // By Type
-                if (!byType[row.type]) {
-                    byType[row.type] = { hours: 0, employees: new Set() };
-                }
-                byType[row.type].hours += row.paidHours;
-                byType[row.type].employees.add(row.employeeId);
-                
-                // By Function
-                const funcKey = `${row.type} - ${row.functionName}`;
-                if (!byFunction[funcKey]) {
-                    byFunction[funcKey] = { hours: 0, employees: new Set(), type: row.type };
-                }
-                byFunction[funcKey].hours += row.paidHours;
-                byFunction[funcKey].employees.add(row.employeeId);
-                
-                // By Manager
-                if (!byManager[row.managerName]) {
-                    byManager[row.managerName] = { 
-                        total: 0,
-                        employees: new Set(),
-                        byType: {}
-                    };
-                }
-                if (!byManager[row.managerName].byType[row.type]) {
-                    byManager[row.managerName].byType[row.type] = 0;
-                }
-                byManager[row.managerName].byType[row.type] += row.paidHours;
-                byManager[row.managerName].total += row.paidHours;
-                byManager[row.managerName].employees.add(row.employeeId);
+            } else {
+                // If same key appears again (e.g., from multiple day windows within the same shift),
+                // accumulate the hours instead of dropping
+                const existing = uniqueEmployees.get(key);
+                existing.paidHours += row.paidHours;
+                return; // Skip re-adding to aggregates — we'll rebuild from uniqueEmployees below
             }
+        });
+        
+        // Now aggregate from the deduplicated + accumulated map
+        uniqueEmployees.forEach((row) => {
+            // By Type
+            if (!byType[row.type]) {
+                byType[row.type] = { hours: 0, employees: new Set() };
+            }
+            byType[row.type].hours += row.paidHours;
+            byType[row.type].employees.add(row.employeeId);
+            
+            // By Function
+            const funcKey = `${row.type} - ${row.functionName}`;
+            if (!byFunction[funcKey]) {
+                byFunction[funcKey] = { hours: 0, employees: new Set(), type: row.type };
+            }
+            byFunction[funcKey].hours += row.paidHours;
+            byFunction[funcKey].employees.add(row.employeeId);
+            
+            // By Manager
+            if (!byManager[row.managerName]) {
+                byManager[row.managerName] = { 
+                    total: 0,
+                    employees: new Set(),
+                    byType: {}
+                };
+            }
+            if (!byManager[row.managerName].byType[row.type]) {
+                byManager[row.managerName].byType[row.type] = 0;
+            }
+            byManager[row.managerName].byType[row.type] += row.paidHours;
+            byManager[row.managerName].total += row.paidHours;
+            byManager[row.managerName].employees.add(row.employeeId);
         });
         
         return { byType, byFunction, byManager };
