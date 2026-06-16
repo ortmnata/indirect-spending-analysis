@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      2.0
+// @version      2.3
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -700,10 +700,14 @@
 
         // Find Paid Hours column — for Admin HR CSV, columns are named like:
         // "Paid Hours-Daily/Function_employee", "Paid Hours-Medium/Function_employee", etc.
-        // We need "Paid Hours-Total/Function_employee" or the rightmost "Paid Hours" variant
+        // We need the TOTAL paid hours. Strategy:
+        //   1. Exact "Paid Hours" column
+        //   2. Column containing "paid hours" AND "total" (e.g. "Paid Hours-Total/Function_employee")
+        //   3. Column named exactly "Paid Hours" (from Intraday queries which have simpler headers)
+        // If none found with "total", sum ALL "Paid Hours-*" columns per row
         let paidHoursIdx = -1;
         let paidHoursTotalIdx = -1;
-        let lastPaidHoursIdx = -1;
+        let allPaidHoursIndices = [];
         
         for (let i = 0; i < headerRow.length; i++) {
             const cell = (headerRow[i] || '').trim().toLowerCase();
@@ -711,23 +715,27 @@
                 paidHoursIdx = i;
             }
             if (cell.includes('paid hours') && cell.includes('total')) {
-                paidHoursTotalIdx = i; // "Paid Hours-Total/..." is the weekly sum
+                paidHoursTotalIdx = i;
             }
-            if (cell.includes('paid hours')) {
-                lastPaidHoursIdx = i; // track rightmost "paid hours" column
+            if (cell.includes('paid hours') && !cell.includes('total')) {
+                allPaidHoursIndices.push(i);
             }
         }
 
-        // Priority: exact "Paid Hours" > "Paid Hours-Total..." > rightmost "Paid Hours-..."
+        // Priority: exact "Paid Hours" > "Paid Hours-Total..." > sum of individual columns
+        const useSumMode = (paidHoursIdx === -1 && paidHoursTotalIdx === -1 && allPaidHoursIndices.length > 0);
         if (paidHoursIdx === -1) paidHoursIdx = paidHoursTotalIdx;
-        if (paidHoursIdx === -1) paidHoursIdx = lastPaidHoursIdx;
 
-        if (paidHoursIdx === -1) {
+        if (paidHoursIdx === -1 && !useSumMode) {
             console.error('[SupportAnalysis] Ops Regional: "Paid Hours" column not found. Header:', headerRow);
             return [];
         }
 
-        console.log(`[SupportAnalysis] Ops Regional using column ${paidHoursIdx} ("${headerRow[paidHoursIdx]}") for paid hours`);
+        if (useSumMode) {
+            console.log(`[SupportAnalysis] Ops Regional: No single total column found. Summing ${allPaidHoursIndices.length} "Paid Hours-*" columns: ${allPaidHoursIndices.map(i => headerRow[i]).join(', ')}`);
+        } else {
+            console.log(`[SupportAnalysis] Ops Regional using column ${paidHoursIdx} ("${headerRow[paidHoursIdx]}") for paid hours`);
+        }
 
         const dataRows = csvRows.slice(1);
         const results = [];
@@ -745,8 +753,17 @@
             
             const employeeName = (row[CSV_COLS.EMPLOYEE_NAME] || '').trim();
             const managerName = (row[CSV_COLS.MANAGER_NAME] || '').trim();
-            const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
-            const paidHours = parseFloat(paidHoursRaw) || 0;
+            
+            // Get paid hours — either from single column or sum of multiple columns
+            let paidHours = 0;
+            if (useSumMode) {
+                allPaidHoursIndices.forEach(idx => {
+                    const val = parseFloat((row[idx] || '').toString().trim()) || 0;
+                    paidHours += val;
+                });
+            } else {
+                paidHours = parseFloat((row[paidHoursIdx] || '').toString().trim()) || 0;
+            }
             
             if (paidHours <= 0) return;
             
@@ -1186,16 +1203,34 @@
                 shiftWindows.push({ label: nightLabel, date: dateStr, startH: 18, endH: 6, overnight: true });
             }
         } else {
-            // Intraday or Day — just the selected day
+            // Intraday or Day — the selected day
+            // For a full day, we need 3 windows:
+            //   1. Previous night tail: midnight (0:00) to 6:00 AM on this day
+            //   2. Day shift: 6:00 AM to 6:00 PM on this day
+            //   3. Night shift: 6:00 PM on this day to midnight (0:00)
+            // The previous night tail belongs to the prior day's night shift label
             const dateObj = new Date(`${baseDate}T12:00:00`);
             const dow = dateObj.getDay();
             let dayLabel, nightLabel;
             if (dow >= 0 && dow <= 2) { dayLabel = 'FHD'; nightLabel = 'FHN'; }
             else if (dow === 3) { dayLabel = 'OD'; nightLabel = 'ON'; }
             else { dayLabel = 'BHD'; nightLabel = 'BHN'; }
-            
+
+            // Previous night's tail (midnight to 6AM) — belongs to previous day's night shift
+            const prevDate = new Date(dateObj);
+            prevDate.setDate(prevDate.getDate() - 1);
+            const prevDow = prevDate.getDay();
+            let prevNightLabel;
+            if (prevDow >= 0 && prevDow <= 2) { prevNightLabel = 'FHN'; }
+            else if (prevDow === 3) { prevNightLabel = 'ON'; }
+            else { prevNightLabel = 'BHN'; }
+
+            // Window: midnight to 6AM on the selected day (tail of previous night)
+            shiftWindows.push({ label: prevNightLabel, date: baseDate, startH: 0, endH: 6, overnight: false });
+            // Window: day shift 6AM-6PM
             shiftWindows.push({ label: dayLabel, date: baseDate, startH: 6, endH: 18, overnight: false });
-            shiftWindows.push({ label: nightLabel, date: baseDate, startH: 18, endH: 6, overnight: true });
+            // Window: night shift 6PM to midnight (not overnight since we cap at midnight)
+            shiftWindows.push({ label: nightLabel, date: baseDate, startH: 18, endH: 0, overnight: true });
         }
         
         // Group shift windows by label and aggregate
@@ -2116,16 +2151,9 @@
             }
             results.shiftComparison = shiftComp;
             
-            // Attach rate metrics to shift comparison using LP/PPR data from main analysis
-            if (shiftComp && shiftComp.shifts && (results._lpData || results._pprData)) {
-                shiftComp.shifts.forEach(s => {
-                    const rm = {};
-                    Object.entries(s.summary.byType || {}).forEach(([typeName, val]) => {
-                        rm[typeName] = computeRateMetrics(typeName, val.hours, results._pprData, results._lpData);
-                    });
-                    s.rateMetrics = rm;
-                });
-            }
+            // Rate to Plan per shift is not computed because PPR volume data
+            // is only available for the full time period, not per individual shift.
+            // Dividing full-period volume by a single shift's hours would be misleading.
             
             displayResults(results);
         } catch (e) {
