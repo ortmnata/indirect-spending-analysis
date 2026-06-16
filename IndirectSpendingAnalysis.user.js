@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      2.7
+// @version      2.8
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -640,40 +640,14 @@
             MANAGER_NAME: 5
         };
 
-        // Find the "Total" marker column dynamically.
-        // In FCLM CSVs, summary rows have "Total" text in a specific column.
-        // Scan data rows to find which column contains "Total" as a text marker.
-        let totalMarkerCol = -1;
-        for (let i = 0; i < Math.min(dataRows.length, 200); i++) {
-            const row = dataRows[i];
-            for (let j = 0; j < row.length; j++) {
-                // Skip the paid hours column and employee data columns
-                if (j === paidHoursIdx) continue;
-                if (j === PS_COLS.EMPLOYEE_ID || j === PS_COLS.EMPLOYEE_NAME || j === PS_COLS.MANAGER_NAME) continue;
-                const cell = (row[j] || '').toString().trim();
-                if (cell === 'Total') {
-                    totalMarkerCol = j;
-                    break;
-                }
-            }
-            if (totalMarkerCol !== -1) break;
-        }
-
-        console.log(`[SupportAnalysis] ${typeLabel}: totalMarkerCol=${totalMarkerCol}, paidHoursIdx=${paidHoursIdx}`);
-
-        // If we found a Total marker column, use ONLY Total rows (prevents double-counting daily + total)
-        // If no marker found (e.g., Intraday queries), use all rows
-        const hasTotalRows = totalMarkerCol !== -1;
-        const results = [];
+        // Strategy: keep the MAX paid hours per employee-function combo.
+        // In Week/Month CSVs, employees have daily rows + a Total row.
+        // The Total row has the highest value (sum of all days).
+        // For Intraday CSVs, there's only one row per employee so max = that value.
+        const employeeMap = new Map();
         
         dataRows.forEach(row => {
             if (row.length < 7) return;
-
-            // If Total rows exist, skip non-Total rows
-            if (hasTotalRows) {
-                const marker = (row[totalMarkerCol] || '').toString().trim();
-                if (marker !== 'Total') return;
-            }
             
             // Validate paid hours value from the detected column
             const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
@@ -690,18 +664,23 @@
             
             if (!employeeId || employeeId === '0' || !functionName) return;
             
-            results.push({
-                type: processName || typeLabel,
-                functionName,
-                employeeId,
-                employeeName,
-                managerName,
-                paidHours,
-                shift: shiftLabel
-            });
+            const key = `${employeeId}-${functionName}`;
+            const existing = employeeMap.get(key);
+            if (!existing || paidHours > existing.paidHours) {
+                employeeMap.set(key, {
+                    type: processName || typeLabel,
+                    functionName,
+                    employeeId,
+                    employeeName,
+                    managerName,
+                    paidHours,
+                    shift: shiftLabel
+                });
+            }
         });
         
-        console.log(`[SupportAnalysis] ${typeLabel}: ${results.length} records, total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}, hasTotalRows=${hasTotalRows}`);
+        const results = [...employeeMap.values()];
+        console.log(`[SupportAnalysis] ${typeLabel}: ${results.length} unique employees, total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}`);
         return results;
     }
 
@@ -760,41 +739,12 @@
 
         const dataRows = csvRows.slice(1);
         
-        // Find "Total" marker column dynamically (same approach as support processes)
-        // Scan data rows for cells containing exactly "Total" text
-        // Check ALL columns except the paid hours columns themselves
-        let totalMarkerCol = -1;
-        for (let i = 0; i < Math.min(dataRows.length, 200); i++) {
-            const row = dataRows[i];
-            for (let j = 0; j < row.length; j++) {
-                if (j === paidHoursIdx) continue;
-                if (useSumMode && allPaidHoursIndices.includes(j)) continue;
-                // Skip columns that typically have numeric data or names
-                if (j === CSV_COLS.EMPLOYEE_ID) continue;
-                if (j === CSV_COLS.EMPLOYEE_NAME) continue;
-                if (j === CSV_COLS.MANAGER_NAME) continue;
-                const cell = (row[j] || '').toString().trim();
-                if (cell === 'Total') {
-                    totalMarkerCol = j;
-                    break;
-                }
-            }
-            if (totalMarkerCol !== -1) break;
-        }
-
-        console.log(`[SupportAnalysis] Ops Regional: totalMarkerCol=${totalMarkerCol}, paidHoursIdx=${paidHoursIdx}, useSumMode=${useSumMode}`);
-
-        const hasTotalRows = totalMarkerCol !== -1;
+        // Use MAX paid hours per employee — the Total row always has the highest value
+        const employeeMap = new Map();
         const results = [];
 
         dataRows.forEach(row => {
             if (row.length < 7) return;
-
-            // If Total rows exist, only use those
-            if (hasTotalRows) {
-                const marker = (row[totalMarkerCol] || '').toString().trim();
-                if (marker !== 'Total') return;
-            }
             
             const functionName = (row[CSV_COLS.FUNCTION_NAME] || '').trim();
             
@@ -807,7 +757,7 @@
             const employeeName = (row[CSV_COLS.EMPLOYEE_NAME] || '').trim();
             const managerName = (row[CSV_COLS.MANAGER_NAME] || '').trim();
             
-            // Get paid hours — either from single column or sum of multiple columns
+            // Get paid hours
             let paidHours = 0;
             if (useSumMode) {
                 allPaidHoursIndices.forEach(idx => {
@@ -820,18 +770,24 @@
             
             if (paidHours <= 0) return;
             
-            results.push({
-                type: 'Ops Regional',
-                functionName,
-                employeeId,
-                employeeName,
-                managerName,
-                paidHours,
-                shift: shiftLabel
-            });
+            // Keep MAX per employee (Total row has the highest value = sum of all days)
+            const existing = employeeMap.get(employeeId);
+            if (!existing || paidHours > existing.paidHours) {
+                employeeMap.set(employeeId, {
+                    type: 'Ops Regional',
+                    functionName,
+                    employeeId,
+                    employeeName,
+                    managerName,
+                    paidHours,
+                    shift: shiftLabel
+                });
+            }
         });
 
-        console.log(`[SupportAnalysis] Ops Regional FINAL: ${results.length} records (from ${dataRows.length} total rows), total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}, totalMarkerCol=${totalMarkerCol}, hasTotalRows=${hasTotalRows}, useSumMode=${useSumMode}, paidHoursIdx=${paidHoursIdx}`);
+        results.push(...employeeMap.values());
+
+        console.log(`[SupportAnalysis] Ops Regional FINAL: ${results.length} unique employees (from ${dataRows.length} total rows), total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}, useSumMode=${useSumMode}, paidHoursIdx=${paidHoursIdx}`);
         return results;
     }
 
