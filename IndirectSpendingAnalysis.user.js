@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      1.6
+// @version      2.0
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -690,52 +690,64 @@
             return [];
         }
 
-        // Use header-based column detection for paid hours (same as processPickSupportData)
         const headerRow = csvRows[0];
-        const paidHoursIdx = findPaidHoursColumnIndex(headerRow);
+        
+        // DEBUG: Log full header so we can see exact CSV structure
+        console.log('[SupportAnalysis] Ops Regional CSV FULL HEADER:', JSON.stringify(headerRow));
+        console.log('[SupportAnalysis] Ops Regional CSV total rows:', csvRows.length);
+        if (csvRows.length > 1) console.log('[SupportAnalysis] Ops Regional CSV ROW 1:', JSON.stringify(csvRows[1]));
+        if (csvRows.length > 2) console.log('[SupportAnalysis] Ops Regional CSV ROW 2:', JSON.stringify(csvRows[2]));
+
+        // Find Paid Hours column — for Admin HR CSV, columns are named like:
+        // "Paid Hours-Daily/Function_employee", "Paid Hours-Medium/Function_employee", etc.
+        // We need "Paid Hours-Total/Function_employee" or the rightmost "Paid Hours" variant
+        let paidHoursIdx = -1;
+        let paidHoursTotalIdx = -1;
+        let lastPaidHoursIdx = -1;
+        
+        for (let i = 0; i < headerRow.length; i++) {
+            const cell = (headerRow[i] || '').trim().toLowerCase();
+            if (cell === 'paid hours') {
+                paidHoursIdx = i;
+            }
+            if (cell.includes('paid hours') && cell.includes('total')) {
+                paidHoursTotalIdx = i; // "Paid Hours-Total/..." is the weekly sum
+            }
+            if (cell.includes('paid hours')) {
+                lastPaidHoursIdx = i; // track rightmost "paid hours" column
+            }
+        }
+
+        // Priority: exact "Paid Hours" > "Paid Hours-Total..." > rightmost "Paid Hours-..."
+        if (paidHoursIdx === -1) paidHoursIdx = paidHoursTotalIdx;
+        if (paidHoursIdx === -1) paidHoursIdx = lastPaidHoursIdx;
+
         if (paidHoursIdx === -1) {
-            console.error('[SupportAnalysis] Ops Regional: Paid Hours column not found in header');
+            console.error('[SupportAnalysis] Ops Regional: "Paid Hours" column not found. Header:', headerRow);
             return [];
         }
 
         console.log(`[SupportAnalysis] Ops Regional using column ${paidHoursIdx} ("${headerRow[paidHoursIdx]}") for paid hours`);
 
-        // Find the "Total" marker column dynamically
-        let totalMarkerIdx = -1;
-        for (let i = 0; i < headerRow.length; i++) {
-            const cell = (headerRow[i] || '').trim().toLowerCase();
-            if (cell === 'total') {
-                totalMarkerIdx = i;
-                break;
-            }
-        }
-
         const dataRows = csvRows.slice(1);
         const results = [];
         
-        // Detect if CSV has "Total" summary rows
-        const hasTotalRows = totalMarkerIdx !== -1 && dataRows.some(row => 
-            row.length > totalMarkerIdx && (row[totalMarkerIdx] || '').trim() === 'Total'
-        );
-        
         dataRows.forEach(row => {
             if (row.length < 7) return;
-
-            // If Total rows exist, only use those to avoid double-counting daily breakdowns
-            if (hasTotalRows && totalMarkerIdx !== -1) {
-                if ((row[totalMarkerIdx] || '').trim() !== 'Total') return;
-            }
             
             const functionName = (row[CSV_COLS.FUNCTION_NAME] || '').trim();
+            
+            // Only include OPS_REGIONALPROJECTS
+            if (functionName !== CONFIG.OPS_REGIONAL_FUNCTION_NAME) return;
+            
             const employeeId = (row[CSV_COLS.EMPLOYEE_ID] || '').trim();
+            if (!employeeId || employeeId === '0') return;
+            
             const employeeName = (row[CSV_COLS.EMPLOYEE_NAME] || '').trim();
             const managerName = (row[CSV_COLS.MANAGER_NAME] || '').trim();
             const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
             const paidHours = parseFloat(paidHoursRaw) || 0;
             
-            // Only include OPS_REGIONALPROJECTS
-            if (functionName !== CONFIG.OPS_REGIONAL_FUNCTION_NAME) return;
-            if (!employeeId || employeeId === '0') return;
             if (paidHours <= 0) return;
             
             results.push({
@@ -748,7 +760,8 @@
                 shift: shiftLabel
             });
         });
-        
+
+        console.log(`[SupportAnalysis] Ops Regional: ${results.length} records, total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}`);
         return results;
     }
 
@@ -763,37 +776,47 @@
             return [];
         }
 
-        // Use header-based column detection for paid hours
         const headerRow = csvRows[0];
-        const paidHoursIdx = findPaidHoursColumnIndex(headerRow);
-        if (paidHoursIdx === -1) {
-            console.error('[SupportAnalysis] Admin HR IT: Paid Hours column not found in header');
-            return [];
-        }
 
-        // Find the "Total" marker column dynamically
-        let totalMarkerIdx = -1;
+        // Find Paid Hours column — exact match only, no "Total" fallback
+        let paidHoursIdx = -1;
         for (let i = 0; i < headerRow.length; i++) {
             const cell = (headerRow[i] || '').trim().toLowerCase();
-            if (cell === 'total') {
-                totalMarkerIdx = i;
-                break;
+            if (cell === 'paid hours') {
+                paidHoursIdx = i;
+            } else if (cell.includes('paid hours') && paidHoursIdx === -1) {
+                paidHoursIdx = i;
             }
         }
 
+        if (paidHoursIdx === -1) {
+            console.error('[SupportAnalysis] Admin HR IT: "Paid Hours" column not found. Header:', headerRow);
+            return [];
+        }
+
+        // Find "Total" marker column from data rows (same logic as Ops Regional)
+        let totalMarkerIdx = -1;
         const dataRows = csvRows.slice(1);
+        for (let i = 0; i < Math.min(dataRows.length, 50); i++) {
+            const row = dataRows[i];
+            for (let j = 0; j < row.length; j++) {
+                if (j === paidHoursIdx) continue;
+                if ((row[j] || '').trim() === 'Total') {
+                    totalMarkerIdx = j;
+                    break;
+                }
+            }
+            if (totalMarkerIdx !== -1) break;
+        }
+
         const results = [];
-        
-        // Detect if CSV has "Total" summary rows
-        const hasTotalRows = totalMarkerIdx !== -1 && dataRows.some(row => 
-            row.length > totalMarkerIdx && (row[totalMarkerIdx] || '').trim() === 'Total'
-        );
+        const hasTotalRows = totalMarkerIdx !== -1;
         
         dataRows.forEach(row => {
             if (row.length < 7) return;
 
             // If Total rows exist, only use those to avoid double-counting daily breakdowns
-            if (hasTotalRows && totalMarkerIdx !== -1) {
+            if (hasTotalRows) {
                 if ((row[totalMarkerIdx] || '').trim() !== 'Total') return;
             }
             
@@ -820,7 +843,8 @@
                 shift: shiftLabel
             });
         });
-        
+
+        console.log(`[SupportAnalysis] Admin HR IT: ${results.length} records, total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}`);
         return results;
     }
 
@@ -1032,9 +1056,7 @@
             updateStatus(`Found ${opsData.length} Ops Regional records`);
             
             // Also extract Admin HR IT sub-functions from the same CSV
-            const adminHRData = processAdminHRData(opsRows, params.shiftLabel);
-            allData.push(...adminHRData);
-            updateStatus(`Found ${adminHRData.length} Admin HR IT records`);
+            // (removed — Admin HR IT is not a separate bucket)
         } catch (e) {
             console.error('Ops Regional / Admin HR IT fetch failed:', e);
             updateStatus(`Ops Regional error: ${e.message}`);
@@ -1213,7 +1235,6 @@
                         const rows = parseCSV(csv);
                         if (proc.label === 'Ops Regional') {
                             shiftData.push(...processOpsRegionalData(rows, label));
-                            shiftData.push(...processAdminHRData(rows, label));
                         } else {
                             shiftData.push(...processPickSupportData(rows, label, proc.label));
                         }
@@ -1891,7 +1912,6 @@
                         <option value="Ship Dock Support">Ship Dock Support</option>
                         <option value="V-Returns Support">V-Returns Support</option>
                         <option value="Ops Regional">Ops Regional</option>
-                        <option value="Admin HR IT">Admin HR IT</option>
                     </select>
                 </div>
                 
