@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      1.5
+// @version      1.6
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -685,24 +685,58 @@
     }
 
     function processOpsRegionalData(csvRows, shiftLabel) {
-        // Skip header row
-        const dataRows = csvRows.length > 1 ? csvRows.slice(1) : [];
+        if (!csvRows || csvRows.length < 2 || !csvRows[0]) {
+            console.error('[SupportAnalysis] Ops Regional: No header row found');
+            return [];
+        }
+
+        // Use header-based column detection for paid hours (same as processPickSupportData)
+        const headerRow = csvRows[0];
+        const paidHoursIdx = findPaidHoursColumnIndex(headerRow);
+        if (paidHoursIdx === -1) {
+            console.error('[SupportAnalysis] Ops Regional: Paid Hours column not found in header');
+            return [];
+        }
+
+        console.log(`[SupportAnalysis] Ops Regional using column ${paidHoursIdx} ("${headerRow[paidHoursIdx]}") for paid hours`);
+
+        // Find the "Total" marker column dynamically
+        let totalMarkerIdx = -1;
+        for (let i = 0; i < headerRow.length; i++) {
+            const cell = (headerRow[i] || '').trim().toLowerCase();
+            if (cell === 'total') {
+                totalMarkerIdx = i;
+                break;
+            }
+        }
+
+        const dataRows = csvRows.slice(1);
         const results = [];
         
+        // Detect if CSV has "Total" summary rows
+        const hasTotalRows = totalMarkerIdx !== -1 && dataRows.some(row => 
+            row.length > totalMarkerIdx && (row[totalMarkerIdx] || '').trim() === 'Total'
+        );
+        
         dataRows.forEach(row => {
-            // FCLM CSV has 18+ columns; only process "Total" summary rows
-            if (row.length < 18) return;
-            if ((row[CSV_COLS.TOTAL_MARKER] || '').trim() !== 'Total') return;
+            if (row.length < 7) return;
+
+            // If Total rows exist, only use those to avoid double-counting daily breakdowns
+            if (hasTotalRows && totalMarkerIdx !== -1) {
+                if ((row[totalMarkerIdx] || '').trim() !== 'Total') return;
+            }
             
             const functionName = (row[CSV_COLS.FUNCTION_NAME] || '').trim();
             const employeeId = (row[CSV_COLS.EMPLOYEE_ID] || '').trim();
             const employeeName = (row[CSV_COLS.EMPLOYEE_NAME] || '').trim();
             const managerName = (row[CSV_COLS.MANAGER_NAME] || '').trim();
-            const paidHours = parseFloat(row[CSV_COLS.PAID_HOURS] || '0') || 0;
+            const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
+            const paidHours = parseFloat(paidHoursRaw) || 0;
             
             // Only include OPS_REGIONALPROJECTS
             if (functionName !== CONFIG.OPS_REGIONAL_FUNCTION_NAME) return;
             if (!employeeId || employeeId === '0') return;
+            if (paidHours <= 0) return;
             
             results.push({
                 type: 'Ops Regional',
@@ -724,25 +758,57 @@
      * Each row gets typed as "Admin HR IT" with the sub-function preserved in functionName.
      */
     function processAdminHRData(csvRows, shiftLabel) {
-        // Skip header row
-        const dataRows = csvRows.length > 1 ? csvRows.slice(1) : [];
+        if (!csvRows || csvRows.length < 2 || !csvRows[0]) {
+            console.error('[SupportAnalysis] Admin HR IT: No header row found');
+            return [];
+        }
+
+        // Use header-based column detection for paid hours
+        const headerRow = csvRows[0];
+        const paidHoursIdx = findPaidHoursColumnIndex(headerRow);
+        if (paidHoursIdx === -1) {
+            console.error('[SupportAnalysis] Admin HR IT: Paid Hours column not found in header');
+            return [];
+        }
+
+        // Find the "Total" marker column dynamically
+        let totalMarkerIdx = -1;
+        for (let i = 0; i < headerRow.length; i++) {
+            const cell = (headerRow[i] || '').trim().toLowerCase();
+            if (cell === 'total') {
+                totalMarkerIdx = i;
+                break;
+            }
+        }
+
+        const dataRows = csvRows.slice(1);
         const results = [];
         
+        // Detect if CSV has "Total" summary rows
+        const hasTotalRows = totalMarkerIdx !== -1 && dataRows.some(row => 
+            row.length > totalMarkerIdx && (row[totalMarkerIdx] || '').trim() === 'Total'
+        );
+        
         dataRows.forEach(row => {
-            // FCLM CSV has 18+ columns; only process "Total" summary rows
-            if (row.length < 18) return;
-            if ((row[CSV_COLS.TOTAL_MARKER] || '').trim() !== 'Total') return;
+            if (row.length < 7) return;
+
+            // If Total rows exist, only use those to avoid double-counting daily breakdowns
+            if (hasTotalRows && totalMarkerIdx !== -1) {
+                if ((row[totalMarkerIdx] || '').trim() !== 'Total') return;
+            }
             
             const functionName = (row[CSV_COLS.FUNCTION_NAME] || '').trim();
             const employeeId = (row[CSV_COLS.EMPLOYEE_ID] || '').trim();
             const employeeName = (row[CSV_COLS.EMPLOYEE_NAME] || '').trim();
             const managerName = (row[CSV_COLS.MANAGER_NAME] || '').trim();
-            const paidHours = parseFloat(row[CSV_COLS.PAID_HOURS] || '0') || 0;
+            const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
+            const paidHours = parseFloat(paidHoursRaw) || 0;
             
             // Exclude OPS_REGIONALPROJECTS — that's handled as its own bucket
             if (functionName === CONFIG.OPS_REGIONAL_FUNCTION_NAME) return;
             if (!functionName) return;
             if (!employeeId || employeeId === '0') return;
+            if (paidHours <= 0) return;
             
             results.push({
                 type: 'Admin HR IT',
