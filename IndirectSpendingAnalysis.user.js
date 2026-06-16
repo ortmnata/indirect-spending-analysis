@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      2.8
+// @version      2.9
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -2314,6 +2314,17 @@
         if (functionEntries.length > 0) {
             html += `
                 <div class="sa-section-title">📦 Support by Function</div>
+                <div style="margin-bottom:8px;">
+                    <label style="font-size:12px;font-weight:600;margin-right:6px;">Sort by:</label>
+                    <select id="sa-func-sort" style="font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid #d1d5db;">
+                        <option value="hours">Hours (highest)</option>
+                        <option value="hours-asc">Hours (lowest)</option>
+                        <option value="type">Type (A-Z)</option>
+                        <option value="function">Function (A-Z)</option>
+                        <option value="hc">Headcount (highest)</option>
+                    </select>
+                </div>
+                <div id="sa-func-table-wrap">
                 <table class="sa-table">
                     <thead>
                         <tr>
@@ -2328,7 +2339,7 @@
             functionEntries.forEach(([key, val]) => {
                 const funcName = key.replace(/^.+ - /, '');
                 html += `
-                    <tr>
+                    <tr data-type="${val.type}" data-func="${funcName}" data-hours="${val.hours}" data-hc="${val.employees.size}">
                         <td>${val.type}</td>
                         <td>${funcName}</td>
                         <td>${val.employees.size}</td>
@@ -2336,7 +2347,7 @@
                     </tr>
                 `;
             });
-            html += `</tbody></table>`;
+            html += `</tbody></table></div>`;
         }
         
         // Manager breakdown
@@ -2381,6 +2392,30 @@
         `;
         
         body.innerHTML = html;
+        
+        // Attach sort listener for the "Support by Function" table
+        const funcSortSelect = document.getElementById('sa-func-sort');
+        if (funcSortSelect) {
+            funcSortSelect.addEventListener('change', () => {
+                const tableWrap = document.getElementById('sa-func-table-wrap');
+                if (!tableWrap) return;
+                const tbody = tableWrap.querySelector('tbody');
+                if (!tbody) return;
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const sortBy = funcSortSelect.value;
+                
+                rows.sort((a, b) => {
+                    if (sortBy === 'hours') return parseFloat(b.dataset.hours) - parseFloat(a.dataset.hours);
+                    if (sortBy === 'hours-asc') return parseFloat(a.dataset.hours) - parseFloat(b.dataset.hours);
+                    if (sortBy === 'type') return a.dataset.type.localeCompare(b.dataset.type) || parseFloat(b.dataset.hours) - parseFloat(a.dataset.hours);
+                    if (sortBy === 'function') return a.dataset.func.localeCompare(b.dataset.func);
+                    if (sortBy === 'hc') return parseInt(b.dataset.hc) - parseInt(a.dataset.hc);
+                    return 0;
+                });
+                
+                rows.forEach(row => tbody.appendChild(row));
+            });
+        }
         
         // Store results for copy
         window.__supportAnalysisResults = results;
