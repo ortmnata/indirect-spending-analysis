@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Indirect Spending Analysis
 // @namespace    https://fclm-portal.amazon.com/
-// @version      2.3
+// @version      2.6
 // @description  Analyze indirect spending across support buckets by shift
 // @author       Orcha + Natalia
 // @match        https://fclm-portal.amazon.com/*
@@ -627,7 +627,6 @@
         console.log(`[SupportAnalysis] ${typeLabel} using column ${paidHoursIdx} ("${csvRows[0][paidHoursIdx]}") for paid hours`);
 
         const dataRows = csvRows.slice(1);
-        const results = [];
         
         // Support process CSVs have variable columns:
         // [0] Process Name (Main Process Path from FCLM)
@@ -641,27 +640,21 @@
             MANAGER_NAME: 5
         };
 
-        // Detect if CSV has "Total" summary rows (Week/Month queries do, Intraday typically don't)
-        // If Total rows exist, ONLY use those to avoid double-counting daily breakdowns
-        const hasTotalRows = dataRows.some(row => row.length > 15 && (row[15] || '').trim() === 'Total');
+        // Accumulate hours per employee-function combo to handle CSVs with daily breakdown rows.
+        // For Week/Month queries, FCLM returns one row per employee per day.
+        // We sum them to get the total for the period.
+        const employeeMap = new Map(); // key → accumulated row data
         
         dataRows.forEach(row => {
             if (row.length < 7) return;
-
-            // If the CSV has Total summary rows, skip non-Total rows to avoid double-counting
-            if (hasTotalRows && row.length > 15) {
-                const marker = (row[15] || '').trim();
-                if (marker !== 'Total') return;
-            }
             
             // Validate paid hours value from the detected column
             const paidHoursRaw = (row[paidHoursIdx] || '').toString().trim();
-            if (paidHoursRaw === '') return; // Skip empty/whitespace
+            if (paidHoursRaw === '') return;
             const paidHours = parseFloat(paidHoursRaw);
-            if (isNaN(paidHours)) return; // Skip non-numeric
-            if (paidHours < 0) return; // Skip negative
+            if (isNaN(paidHours)) return;
+            if (paidHours <= 0) return;
 
-            // Use Process Name from CSV (column 0) as the type — this is the FCLM Main Process Path
             const processName = (row[PS_COLS.PROCESS_NAME] || '').trim();
             const functionName = (row[PS_COLS.FUNCTION_NAME] || '').trim();
             const employeeId = (row[PS_COLS.EMPLOYEE_ID] || '').trim();
@@ -670,18 +663,24 @@
             
             if (!employeeId || employeeId === '0' || !functionName) return;
             
-            results.push({
-                type: processName || typeLabel,
-                functionName,
-                employeeId,
-                employeeName,
-                managerName,
-                paidHours,
-                shift: shiftLabel
-            });
+            const key = `${employeeId}-${functionName}`;
+            const existing = employeeMap.get(key);
+            if (!existing) {
+                employeeMap.set(key, {
+                    type: processName || typeLabel,
+                    functionName,
+                    employeeId,
+                    employeeName,
+                    managerName,
+                    paidHours,
+                    shift: shiftLabel
+                });
+            } else {
+                existing.paidHours += paidHours;
+            }
         });
         
-        return results;
+        return [...employeeMap.values()];
     }
 
     function processOpsRegionalData(csvRows, shiftLabel) {
@@ -738,8 +737,12 @@
         }
 
         const dataRows = csvRows.slice(1);
-        const results = [];
         
+        // The CSV has one row per employee per day. Column "Paid Hours-Total/Function_employee" 
+        // is the daily total across sort types, NOT the weekly total.
+        // We need to sum across all days per employee to get the weekly total.
+        const employeeMap = new Map(); // employeeId → accumulated data
+
         dataRows.forEach(row => {
             if (row.length < 7) return;
             
@@ -767,18 +770,26 @@
             
             if (paidHours <= 0) return;
             
-            results.push({
-                type: 'Ops Regional',
-                functionName,
-                employeeId,
-                employeeName,
-                managerName,
-                paidHours,
-                shift: shiftLabel
-            });
+            // Accumulate hours per employee across multiple daily rows
+            const existing = employeeMap.get(employeeId);
+            if (!existing) {
+                employeeMap.set(employeeId, {
+                    type: 'Ops Regional',
+                    functionName,
+                    employeeId,
+                    employeeName,
+                    managerName,
+                    paidHours,
+                    shift: shiftLabel
+                });
+            } else {
+                existing.paidHours += paidHours;
+            }
         });
 
-        console.log(`[SupportAnalysis] Ops Regional: ${results.length} records, total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}`);
+        const results = [...employeeMap.values()];
+
+        console.log(`[SupportAnalysis] Ops Regional FINAL: ${results.length} unique employees (from ${dataRows.length} total rows), total hours: ${results.reduce((s, r) => s + r.paidHours, 0).toFixed(2)}, useSumMode=${useSumMode}, paidHoursIdx=${paidHoursIdx}`);
         return results;
     }
 
